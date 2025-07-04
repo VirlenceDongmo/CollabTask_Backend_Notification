@@ -11,117 +11,71 @@ from django.core.mail import send_mail
 from rest_framework.exceptions import PermissionDenied, NotFound
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
+
+import logging
 
 
 
-class CreateNotification(APIView):
-    def post(self, request):
+logger = logging.getLogger(__name__)
+
+class CreateNotificationView(generics.CreateAPIView):
+    queryset = Notification.objects.all()
+    serializer_class = NotificationSerializer
+
+    def perform_create(self, serializer):
+        # Vérifier que le destinateur, s'il est fourni, correspond à l'utilisateur connecté
+        destinateur = self.request.data.get('destinateur')
+        if destinateur and destinateur != str(self.request.user.id):
+            logger.error(f"Validation error: destinateur {destinateur} does not match user {self.request.user.id}")
+            raise ValidationError({"destinateur": "Le destinateur doit être l'utilisateur connecté ou null."})
+
+        notification = serializer.save()
+        logger.info(f"Notification créée: {notification.id}")
+
+        # Vérifier si l'envoi d'email est requis
+        send_email = self.request.data.get('send_email', False)
+        if send_email and notification.destinataire:
+            recipient_email = self._get_recipient_email(notification.destinataire)
+            if recipient_email:
+                self._send_email(notification, recipient_email)
+            else:
+                logger.warning(f"Aucun email valide trouvé pour le destinataire {notification.destinataire}")
+
+    def _get_recipient_email(self, destinataire_id):
+        """Récupérer l'email du destinataire via USER_SERVICE_URL."""
         try:
-            # Vérification du content-type
-            if request.content_type != 'application/json':
-                return Response(
-                    {'error': 'Content-Type must be application/json'},
-                    status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
-                )
-
-            # Décodage des données JSON
-            try:
-                data = json.loads(request.body)
-            except json.JSONDecodeError:
-                return Response(
-                    {'error': 'Invalid JSON data'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            # Validation des champs requis
-            required_fields = ['destinataire', 'destinateur', 'type', 'contenu']
-            if not all(field in data for field in required_fields):
-                return Response(
-                    {'error': f'Missing required fields. Required: {required_fields}'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            # Sauvegarde de la notification en base de données
-            notification = Notification.objects.create(
-                destinataire=data['destinataire'],
-                destinateur=data['destinateur'],
-                type=data['type'],
-                contenu=data['contenu'],
-                tache=data.get('tache'),
-                date_envoi=timezone.now(),
-                lu=False
-            )
-
-            # Récupérer l'email de l'utilisateur
-            user_email = self._get_user_email(data['destinataire'])
-            if not user_email:
-                print(f"Aucun email trouvé pour l'utilisateur {data['destinataire']}")
-
-            # Envoyer l'email si send_email est True
-            email_sent = False
-            if user_email and data.get('send_email', False):
-                try:
-                    email_sent = self._send_notification_email(user_email, data['contenu'])
-                    print(f"Email envoyé à {user_email}")
-                except Exception as email_error:
-                    print(f"Erreur lors de l'envoi de l'email: {str(email_error)}")
-
-            # Réponse avec la notification créée
-            return Response(
-                {
-                    'status': 'success',
-                    'notification': {
-                        'id': notification.id,
-                        'destinataire': notification.destinataire,
-                        'destinateur': notification.destinateur,
-                        'type': notification.type,
-                        'contenu': notification.contenu,
-                        'tache': notification.tache,
-                        'date_envoi': notification.date_envoi,
-                        'lu': notification.lu
-                    },
-                    'email': user_email
-                },
-                status=status.HTTP_201_CREATED
-            )
-
-        except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-    def _get_user_email(self, user_id):
-        try:
-            print(f"Tentative de récupération de l'email pour l'utilisateur {user_id}")
             response = requests.get(
-                f'{settings.USER_SERVICE_URL}/api/user/{user_id}/',
-                headers={'Authorization': self.request.headers.get('Authorization')}
+                f'{settings.USER_SERVICE_URL}/api/user/{destinataire_id}/',
+                headers={
+                    'Authorization': self.request.headers.get('Authorization'),
+                    'Content-Type': 'application/json',
+                },
+                timeout=2,
             )
-            print(f"Réponse du service utilisateur: {response.status_code} - {response.text}")
-            if response.status_code == 200:
-                email = response.json().get('email')
-                print(f"Email trouvé: {email}")
-                return email
-            return None
-        except requests.RequestException as e:
-            print(f"Erreur de requête: {str(e)}")
+            response.raise_for_status()
+            user_data = response.json()
+            email = user_data.get('email')
+            logger.info(f"Email récupéré pour destinataire {destinataire_id}: {email}")
+            return email
+        except Exception as e:
+            logger.error(f"Erreur récupération email destinataire {destinataire_id}: {str(e)}")
             return None
 
-    def _send_notification_email(self, email, message):
-        """Méthode helper pour envoyer des emails"""
+    def _send_email(self, notification, recipient_email):
+        """Envoyer l'email directement avec send_mail."""
         try:
             send_mail(
-                subject="Nouvelle notification",
-                message=message,
+                subject=f"Notification: {notification.type}",
+                message=notification.contenu,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[email],
-                fail_silently=False,
+                recipient_list=[recipient_email],
+                fail_silently=False
             )
-            return True
+            logger.info(f"Email envoyé à {recipient_email} pour la notification {notification.id}")
         except Exception as e:
-            print(f"Erreur lors de l'envoi de l'email: {str(e)}")
-            return False
+            logger.error(f"Erreur envoi email à {recipient_email} pour la notification {notification.id}: {str(e)}")
+
 
 
 

@@ -139,6 +139,7 @@ CSRF_TRUSTED_ORIGINS = [
 ALLOWED_HOSTS = [
     '127.0.0.1',
     'localhost',
+    'client'
 ]
 
 # Configuration pour les cookies de session
@@ -196,7 +197,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/4.2/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'fr-FR'
 
 TIME_ZONE = 'UTC'
 
@@ -230,7 +231,9 @@ EMAIL_TIMEOUT = 10  # Timeout en secondes
 
 USER_SERVICE_URL = 'http://utilisateur:8000'
 
-TASK_SERVICE_URL = 'http://utilisateur:8000'
+TASK_SERVICE_URL = 'http://tache:8001'
+
+PLATFORM_URL = 'collabtask'
 
 
 RABBITMQ = {

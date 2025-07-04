@@ -47,33 +47,65 @@ def process_message(body):
     except Exception as e:
         print(f"Erreur de traitement: {str(e)}")
         return False
-    
+
 
 def _handle_task_creation(data, Notification):
     """Gestion des créations de tâches"""
-    notification = Notification.objects.create(
-        user_id=data['assigned_to'],
-        message=f"Nouvelle tâche: {data['task_title']}",
-        related_object_id=data['task_id'],
-        related_object_type='task',
-    )
-    
-    send_mail(
-        subject=f"🆕 Tâche assignée: {data['task_title']}",
-        message=f"""Bonjour,
-        
-Vous avez été assigné à une nouvelle tâche:
-Titre: {data['task_title']}
-Description: {data.get('description', 'Non spécifiée')}
-Date limite: {data.get('due_date', 'Non spécifiée')}
+    try:
+        # # Validation des données
+        # required_fields = ['task_id', 'task_title', 'assigned_to', 'assigned_to_email']
+        # if not all(k in data for k in required_fields):
+        #     print(f"Données incomplètes pour la création de tâche: {data}")
+        #     return False
+
+        # Construire le contenu de la notification
+        contenu = (
+            f"Nouvelle tâche créée : {data['task_title']}\n"
+            f"Description : {data.get('description', 'Non spécifiée')}\n"
+            f"Échéance : {data.get('due_date', 'Non spécifiée')}"
+        )
+
+        # Création de la notification
+        notification = Notification.objects.create(
+            type='Tâche',
+            contenu=contenu,
+            destinataire=data['assigned_to'],
+            destinateur=data.get('destinateur', None),
+            tache=data['task_id'],
+            lu=False
+        )
+        print(f"Notification créée: {notification.id}")
+
+        # Envoi de l'email
+        try:
+            send_mail(
+                subject=f"🆕 Tâche assignée : {data['task_title']}",
+                message=f"""Bonjour,
+
+Vous avez été assigné à une nouvelle tâche :
+- Titre : {data['task_title']}
+- Description : {data.get('description', 'Non spécifiée')}
+- Date limite : {data.get('due_date', 'Non spécifiée')}
+
+Veuillez vous connecter à {settings.PLATFORM_URL} pour plus de détails.
 
 Cordialement,
 L'équipe CollabTask""",
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[data['assigned_to_email']],
-        fail_silently=False
-    )
-    return True
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[data['assigned_to_email']],
+                fail_silently=False
+            )
+            print(f"Email envoyé à {data['assigned_to_email']}")
+            return True
+        except Exception as email_error:
+            print(f"Échec de l'envoi de l'email: {str(email_error)}")
+            return False
+
+    except Exception as e:
+        print(f"ERREUR dans _handle_task_creation: {str(e)}")
+        return False   
+
+
 
 
 logger = logging.getLogger(__name__)
@@ -154,59 +186,87 @@ def _handle_account_creation(data, Notification):
 #         return False
 
 
+def _format_changes(changes):
+    """Format changes for email notification."""
+    formatted = []
+    for key, value in changes.items():
+        formatted.append(f"- {key.capitalize()}: {value if value is not None else 'Non spécifié'}")
+    return "\n".join(formatted) if formatted else "Aucun changement spécifique."
+
+
 
 def _handle_task_update(data, Notification):
     """Gestion des mises à jour de tâches"""
     try:
-        # Vérification des données obligatoires
-        if not data.get('assigned_to'):
-            print("Erreur: assigned_to manquant dans les données")
-            return False
+        # # Vérification des données obligatoires
+        # required_fields = ['task_id', 'task_title', 'assigned_to', 'assigned_to_email']
+        # if not all(k in data for k in required_fields):
+        #     print(f"Données incomplètes pour la mise à jour de tâche: {data}")
+        #     return False
 
         # Conversion de l'ID en entier si nécessaire
-        user_id = int(data['assigned_to']) if data['assigned_to'] else None
-        
+        destinataire_id = int(data['assigned_to']) if data['assigned_to'] else None
+
+        # Construire le contenu de la notification
+        contenu = (
+            f"Tâche modifiée : {data['task_title']}\n"
+            f"Changements :\n{_format_changes(data.get('changes', {}))}\n"
+            f"Modifiée par : {data.get('initiator_name', 'Inconnu')}"
+        )
+
         # Notification pour l'assigné
-        if user_id:
+        if destinataire_id:
             Notification.objects.create(
-                user_id=user_id,  # Utilisation de l'ID converti
-                message=f"Mise à jour de la tâche: {data['task_title']}",
-                related_object_id=data['task_id'],
-                related_object_type='task',
+                type='Tâche',
+                contenu=contenu,
+                destinataire=destinataire_id,
+                destinateur=int(data['initiator_id']) if data.get('initiator_id') else None,
+                tache=data['task_id'],
+                lu=False
             )
-        
+
         # Notification pour le créateur (si différent et si l'info existe)
-        created_by = data.get('created_by')
+        created_by = data.get('initiator_id')  # Utiliser initiator_id comme créateur
         if created_by and str(created_by) != str(data['assigned_to']):
             try:
                 Notification.objects.create(
-                    user_id=int(created_by),
-                    message=f"Mise à jour de votre tâche: {data['task_title']}",
-                    related_object_id=data['task_id'],
-                    related_object_type='task'
+                    type='Tâche',
+                    contenu=contenu,
+                    destinataire=int(created_by),
+                    destinateur=int(data['initiator_id']) if data.get('initiator_id') else None,
+                    tache=data['task_id'],
+                    lu=False
                 )
             except (ValueError, TypeError) as e:
                 print(f"Erreur création notification créateur: {e}")
 
         # Email à l'assigné
         if data.get('assigned_to_email'):
-            send_mail(
-                subject=f"✏️ Tâche modifiée: {data['task_title']}",
-                message=f"""Bonjour,
-                
+            try:
+                send_mail(
+                    subject=f"✏️ Tâche modifiée : {data['task_title']}",
+                    message=f"""Bonjour,
+
 La tâche "{data['task_title']}" a été modifiée par {data.get('initiator_name', 'un utilisateur')}.
 
-Changements:
+Changements :
 {_format_changes(data.get('changes', {}))}
+
+Veuillez vous connecter à {settings.PLATFORM_URL} pour plus de détails.
 
 Cordialement,
 L'équipe CollabTask""",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[data['assigned_to_email']],
-                fail_silently=False
-            )
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[data['assigned_to_email']],
+                    fail_silently=False
+                )
+                print(f"Email envoyé à {data['assigned_to_email']}")
+            except Exception as email_error:
+                print(f"Échec de l'envoi de l'email: {str(email_error)}")
+                return False
+
         return True
-        
+
     except Exception as e:
         print(f"Erreur traitement mise à jour tâche: {str(e)}")
         return False
@@ -216,37 +276,52 @@ L'équipe CollabTask""",
 def _handle_status_change(data, Notification):
     """Gestion des changements de statut"""
     try:
-        # Convertir admin_recipients en liste standardisée
-        admin_recipients = []
-        
-        # Cas 1: Chaîne d'email unique
-        if isinstance(data.get('admin_recipients'), str):
-            admin_recipients = [{'email': data['admin_recipients']}]
-        # Cas 2: Liste de dictionnaires
-        elif isinstance(data.get('admin_recipients'), list):
-            admin_recipients = data['admin_recipients']
-        
+        # # Vérification des données obligatoires
+        # required_fields = ['task_id', 'task_title', 'assigned_to', 'assigned_to_email', 'old_status', 'new_status']
+        # if not all(k in data for k in required_fields):
+        #     print(f"Données incomplètes pour le changement de statut: {data}")
+        #     return False
+
+        # Conversion de l'ID en entier si nécessaire
+        destinataire_id = int(data['assigned_to']) if data['assigned_to'] else None
+
+        # Construire le contenu de la notification
+        contenu = (
+            f"Changement de statut de la tâche : {data['task_title']}\n"
+            f"De : {data['old_status']}\n"
+            f"À : {data['new_status']}\n"
+            f"Initiateur : {data.get('initiator_name', 'Inconnu')}"
+        )
+
         # Notification pour l'assigné
-        if data.get('assigned_to'):
+        if destinataire_id:
             Notification.objects.create(
-                user_id=int(data['assigned_to']),
-                message=f"Changement de statut: {data['task_title']} ({data['old_status']} → {data['new_status']})",
-                related_object_id=data['task_id'],
-                related_object_type='task',
+                type='Statut',
+                contenu=contenu,
+                destinataire=destinataire_id,
+                destinateur=int(data['initiator_id']) if data.get('initiator_id') else None,
+                tache=data['task_id'],
+                lu=False
             )
-        
+
         # Notification pour les admins
+        admin_recipients = []
+        if isinstance(data.get('recipients'), str):
+            admin_recipients = [{'email': data['recipients']}]
+        elif isinstance(data.get('recipients'), list):
+            admin_recipients = [{'email': email} for email in data['recipients']]
+
         for admin in admin_recipients:
             if isinstance(admin, dict) and admin.get('email'):
-                # Vous devrez peut-être récupérer l'ID admin via une API
-                # Ici on suppose que admin est un dict avec 'id' et 'email'
                 try:
+                    # Supposons que l'ID admin doit être récupéré via une API si nécessaire
                     Notification.objects.create(
-                        user_id=int(admin.get('id', 0)),  # 0 ou une valeur par défaut
-                        message=f"Changement statut tâche: {data['task_title']}",
-                        related_object_id=data['task_id'],
-                        related_object_type='task',
-    
+                        type='Statut',
+                        contenu=contenu,
+                        destinataire=None,  # Admin ID non spécifié dans les données
+                        destinateur=int(data['initiator_id']) if data.get('initiator_id') else None,
+                        tache=data['task_id'],
+                        lu=False
                     )
                 except Exception as e:
                     print(f"Erreur création notification admin: {str(e)}")
@@ -255,32 +330,166 @@ def _handle_status_change(data, Notification):
         recipients = []
         if data.get('assigned_to_email'):
             recipients.append(data['assigned_to_email'])
-        
         recipients.extend([admin.get('email') for admin in admin_recipients 
-                         if isinstance(admin, dict) and admin.get('email')])
-        
-        if recipients:
-            send_mail(
-                subject=f"⚠️ Changement de statut: {data['task_title']}",
-                message=f"""Alerte,
-                
-Le statut de la tâche "{data['task_title']}" a changé:
-De: {data['old_status']}
-À: {data['new_status']}
+                          if isinstance(admin, dict) and admin.get('email')])
 
-Initiateur: {data.get('initiator_name', 'Inconnu')}
+        if recipients:
+            try:
+                send_mail(
+                    subject=f"⚠️ Changement de statut : {data['task_title']}",
+                    message=f"""Bonjour,
+
+Le statut de la tâche "{data['task_title']}" a changé :
+- De : {data['old_status']}
+- À : {data['new_status']}
+- Initiateur : {data.get('initiator_name', 'Inconnu')}
+
+Veuillez vous connecter à {settings.PLATFORM_URL} pour plus de détails.
 
 Cordialement,
 L'équipe CollabTask""",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=list(set(recipients)),  # Évite les doublons
-                fail_silently=False
-            )
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=list(set(recipients)),  # Évite les doublons
+                    fail_silently=False
+                )
+                print(f"Email envoyé à {recipients}")
+            except Exception as email_error:
+                print(f"Échec de l'envoi de l'email: {str(email_error)}")
+                return False
+
         return True
-        
+
     except Exception as e:
         print(f"Erreur traitement changement statut: {str(e)}")
         return False
+
+
+# def _handle_task_update(data, Notification):
+#     """Gestion des mises à jour de tâches"""
+#     try:
+#         # Vérification des données obligatoires
+#         if not data.get('assigned_to'):
+#             print("Erreur: assigned_to manquant dans les données")
+#             return False
+
+#         # Conversion de l'ID en entier si nécessaire
+#         user_id = int(data['assigned_to']) if data['assigned_to'] else None
+        
+#         # Notification pour l'assigné
+#         if user_id:
+#             Notification.objects.create(
+#                 user_id=user_id,  # Utilisation de l'ID converti
+#                 message=f"Mise à jour de la tâche: {data['task_title']}",
+#                 related_object_id=data['task_id'],
+#                 related_object_type='task',
+#             )
+        
+#         # Notification pour le créateur (si différent et si l'info existe)
+#         created_by = data.get('created_by')
+#         if created_by and str(created_by) != str(data['assigned_to']):
+#             try:
+#                 Notification.objects.create(
+#                     user_id=int(created_by),
+#                     message=f"Mise à jour de votre tâche: {data['task_title']}",
+#                     related_object_id=data['task_id'],
+#                     related_object_type='task'
+#                 )
+#             except (ValueError, TypeError) as e:
+#                 print(f"Erreur création notification créateur: {e}")
+
+#         # Email à l'assigné
+#         if data.get('assigned_to_email'):
+#             send_mail(
+#                 subject=f"✏️ Tâche modifiée: {data['task_title']}",
+#                 message=f"""Bonjour,
+                
+# La tâche "{data['task_title']}" a été modifiée par {data.get('initiator_name', 'un utilisateur')}.
+
+# Changements:
+# {_format_changes(data.get('changes', {}))}
+
+# Cordialement,
+# L'équipe CollabTask""",
+#                 from_email=settings.DEFAULT_FROM_EMAIL,
+#                 recipient_list=[data['assigned_to_email']],
+#                 fail_silently=False
+#             )
+#         return True
+        
+#     except Exception as e:
+#         print(f"Erreur traitement mise à jour tâche: {str(e)}")
+#         return False
+    
+
+
+# def _handle_status_change(data, Notification):
+#     """Gestion des changements de statut"""
+#     try:
+#         # Convertir admin_recipients en liste standardisée
+#         admin_recipients = []
+        
+#         # Cas 1: Chaîne d'email unique
+#         if isinstance(data.get('admin_recipients'), str):
+#             admin_recipients = [{'email': data['admin_recipients']}]
+#         # Cas 2: Liste de dictionnaires
+#         elif isinstance(data.get('admin_recipients'), list):
+#             admin_recipients = data['admin_recipients']
+        
+#         # Notification pour l'assigné
+#         if data.get('assigned_to'):
+#             Notification.objects.create(
+#                 user_id=int(data['assigned_to']),
+#                 message=f"Changement de statut: {data['task_title']} ({data['old_status']} → {data['new_status']})",
+#                 related_object_id=data['task_id'],
+#                 related_object_type='task',
+#             )
+        
+#         # Notification pour les admins
+#         for admin in admin_recipients:
+#             if isinstance(admin, dict) and admin.get('email'):
+#                 # Vous devrez peut-être récupérer l'ID admin via une API
+#                 # Ici on suppose que admin est un dict avec 'id' et 'email'
+#                 try:
+#                     Notification.objects.create(
+#                         user_id=int(admin.get('id', 0)),  # 0 ou une valeur par défaut
+#                         message=f"Changement statut tâche: {data['task_title']}",
+#                         related_object_id=data['task_id'],
+#                         related_object_type='task',
+    
+#                     )
+#                 except Exception as e:
+#                     print(f"Erreur création notification admin: {str(e)}")
+
+#         # Envoi des emails
+#         recipients = []
+#         if data.get('assigned_to_email'):
+#             recipients.append(data['assigned_to_email'])
+        
+#         recipients.extend([admin.get('email') for admin in admin_recipients 
+#                          if isinstance(admin, dict) and admin.get('email')])
+        
+#         if recipients:
+#             send_mail(
+#                 subject=f"⚠️ Changement de statut: {data['task_title']}",
+#                 message=f"""Alerte,
+                
+# Le statut de la tâche "{data['task_title']}" a changé:
+# De: {data['old_status']}
+# À: {data['new_status']}
+
+# Initiateur: {data.get('initiator_name', 'Inconnu')}
+
+# Cordialement,
+# L'équipe CollabTask""",
+#                 from_email=settings.DEFAULT_FROM_EMAIL,
+#                 recipient_list=list(set(recipients)),  # Évite les doublons
+#                 fail_silently=False
+#             )
+#         return True
+        
+#     except Exception as e:
+#         print(f"Erreur traitement changement statut: {str(e)}")
+#         return False
 
 
 
